@@ -7,6 +7,11 @@ import platform
 import shlex
 import subprocess
 import sys
+import tempfile
+
+
+FRAMEGEN_REVISION = "07d8ba52b671053dd67286ba3586b4ced4100203"
+FRAMEGEN_PATCH = Path(__file__).resolve().parent / "patches/shared-frame-generation.patch"
 
 
 # Name, title ID, package version, backend, Xcode release
@@ -38,6 +43,8 @@ def main():
                         help="package the shared iPhone Duo settings")
     parser.add_argument("--picture", choices=("fit", "fill", "match"),
                         help="Duo picture mode (fill crops, match needs a game-specific viewport)")
+    parser.add_argument("--frame-generation", choices=("30", "60"),
+                        help="experimental MetalFX interpolation at the selected real FPS")
     parser.add_argument("--keys", type=Path, help="local keys for encrypted packages")
     parser.add_argument("--platform", choices=("ios", "mac-app"), default="ios")
     parser.add_argument("--output-dir", type=Path, default=Path("build"))
@@ -69,6 +76,14 @@ def main():
         if not branch_notes.is_file() or "DM_FRAME_MODE" not in branch_notes.read_text():
             parser.error("--screen-shape-engine requires the richservo checkout with HookLink support.")
         backend_name, xcode = "richservo screen-shape", "27.2"
+    if args.frame_generation:
+        if not (args.duo and args.screen_shape_engine):
+            parser.error("--frame-generation requires --duo and --screen-shape-engine.")
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=backend, capture_output=True, text=True,
+        )
+        if revision.returncode or revision.stdout.strip() != FRAMEGEN_REVISION:
+            parser.error(f"Frame generation requires richservo's revision {FRAMEGEN_REVISION}.")
 
     settings = {}
     if args.duo:
@@ -80,15 +95,22 @@ def main():
             "DM_PICTURE_FIT": "fill" if args.picture == "fill" else "fit",
         }
         if args.picture == "match":
-            settings["DM_SCREEN_ASPECT"] = "auto"
-            print("Match Screen requires title-specific viewport support. Check geometry and HUD on-device.",
-                  flush=True)
+            if args.game == "ocarina" and args.screen_shape_engine:
+                settings.update(DM_WIDE_VIEW="1", DM_WIDE_HUD="1")
+            else:
+                settings["DM_SCREEN_ASPECT"] = "auto"
+                print("Match Screen requires title-specific viewport support. Check geometry and HUD on-device.",
+                      flush=True)
+        if args.frame_generation:
+            settings["DM_NATIVECOOL_FRAMEGEN_FPS"] = args.frame_generation
 
     output_dir = args.output_dir.expanduser().resolve() / args.game / args.platform
     if args.screen_shape_engine:
         output_dir /= "screen-shape"
     if args.duo:
         output_dir /= "duo-" + (args.picture or "fit")
+    if args.frame_generation:
+        output_dir /= "framegen-" + args.frame_generation
     extension = ".ipa" if args.platform == "ios" else ".app"
     artifact = output_dir / (args.game + extension)
     command = [
@@ -106,6 +128,8 @@ def main():
     print(f"{name} · {version} · {backend_name} · Xcode {xcode}", flush=True)
     print(f"Output: {artifact}", flush=True)
     if args.dry_run:
+        if args.frame_generation:
+            print(f"Apply {FRAMEGEN_PATCH.name} in a temporary backend worktree.")
         redacted = command + (["-k", "<local keys file>"] if keys else [])
         print(shlex.join(redacted))
         if settings_text:
@@ -122,7 +146,23 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
         if settings_text:
             settings_file.write_text(settings_text, encoding="utf-8")
-        result = subprocess.run(command, cwd=backend, check=False)
+        if args.frame_generation:
+            with tempfile.TemporaryDirectory(prefix="nativecool-") as directory:
+                patched = Path(directory) / "engine"
+                subprocess.run(["git", "worktree", "add", "--detach", str(patched),
+                                FRAMEGEN_REVISION], cwd=backend, check=True)
+                try:
+                    subprocess.run(["git", "apply", str(FRAMEGEN_PATCH)],
+                                   cwd=patched, check=True)
+                    command[2] = str(patched / packer.relative_to(backend))
+                    result = subprocess.run(command, cwd=patched, check=False)
+                finally:
+                    subprocess.run(["git", "worktree", "remove", "--force", str(patched)],
+                                   cwd=backend, check=True)
+        else:
+            result = subprocess.run(command, cwd=backend, check=False)
+    except subprocess.CalledProcessError as error:
+        parser.exit(1, f"Preparing the patched engine failed (exit {error.returncode}).\n")
     except OSError as error:
         parser.exit(1, f"Build could not start: {error}\n")
     if result.returncode:

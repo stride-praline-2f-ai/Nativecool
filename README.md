@@ -22,6 +22,23 @@ python3 nativecool.py dungeons ~/Games/DungeonsII --backend ~/src/nxnative --key
 
 Add `--dry-run` to check the paths and generated command without running the packer. Add `--platform mac-app` for a Mac gameplay baseline. Outputs and reusable work files live under `build/<game>/<platform>/` by default. The iOS build writes an unsigned IPA and separate game data. Follow the backend's signing, install and game-data transfer instructions for its output. The packer's output supplies the transfer details. Use `--bundle-romfs` if you need the game data inside the IPA and your installer can handle its size.
 
+## Shared iPhone Duo features
+
+Add `--duo` to any of the three commands above. This packages handheld mode, MetalFX present upscaling, pipeline preparation, an FPS counter and aspect-preserving Fit. It requests the A20 GPU pipeline archive (`g19p`). Shader prewarm coverage comes from the selected game's upstream profile. The bundled settings are fixed for that build. Launch without `--duo` for an upstream-default comparison.
+
+- `--duo --picture fill` fills the display without stretching by cropping the picture. Check HUD and multiplayer margins before using it.
+- `--duo --picture match` requests the backend's display-matched viewport. The option only changes the world framing when the game has the corresponding viewport support. Fit remains the presentation mode. True fullscreen with a separate 16:9 HUD is verified in the linked Tears of the Kingdom report. Equivalent behavior is open for these three titles.
+- `--screen-shape-engine` selects the experimental richservo engine with HookLink-derived runtime code. The branch contains profiles for all three target games, including the smaller Dungeons memory layout. Frame generation, real-time frame stepping, pipeline handling and viewport behavior still depend on the title and the engine's runtime gates. Zelda-specific rendering and timing changes require equivalent game-specific work for Overcooked and Dungeons. Use the original build route as a comparison.
+
+~~~sh
+git clone --branch totk-screen-shape https://github.com/richservo/nxnative.git ~/src/nxnative-screen-shape
+python3 nativecool.py ocarina ~/Games/Ocarina.nup --backend ~/src/nxnative-screen-shape --screen-shape-engine --duo --picture match --dry-run
+python3 nativecool.py overcooked ~/Games/Overcooked --backend ~/src/nxnative --keys ~/Private/prod.keys --duo
+python3 nativecool.py dungeons ~/Games/DungeonsII --backend ~/src/nxnative --keys ~/Private/prod.keys --duo
+~~~
+
+Use Xcode 27.2 for the screen-shape checkout. Remove `--dry-run` to build. Preset and experimental builds have their own output and work directories, so you can compare them against upstream defaults.
+
 ## What the five references tell us
 
 - **HookLink** is the Zelda comparison build. Its documentation covers separate game-data transfer, startup pipeline preparation, lower-memory rendering and keeping game speed correct when frames take longer. Test an equivalent route and save on the same phone when comparing it with NX18. [HookLink](https://github.com/dsi-hub/HookLink)

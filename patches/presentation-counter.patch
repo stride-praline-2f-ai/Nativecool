@@ -1,0 +1,107 @@
+--- a/dm/gfx/nvn/nvn_mtl.m
++++ b/dm/gfx/nvn/nvn_mtl.m
+@@ -16318,6 +16318,13 @@
+ static id<MTLRenderPipelineState> g_blit_pso; static MTLPixelFormat g_blit_fmt;
+ static id<MTLSamplerState> g_blit_samp;
+ static uint64_t g_present_n;
++#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
++static _Atomic uint64_t g_nativecool_real_presented, g_nativecool_generated_presented;
++void nativecool_presented_counts(uint64_t *real, uint64_t *generated) {
++    *real = atomic_load_explicit(&g_nativecool_real_presented, memory_order_relaxed);
++    *generated = atomic_load_explicit(&g_nativecool_generated_presented, memory_order_relaxed);
++}
++#endif
+ static uint64_t g_present_ser;   // the serial of the texture present_now last showed (tests: which of a present's pictures the display link showed)
+ uint64_t mtl_present_count(void) { return g_present_n; }   // Actual present count (heat attribution DM_HEAT computes the present frame rate)
+ void mtl_res_snapshot(mtl_res_count *out) {
+@@ -17317,10 +17324,22 @@
+     (void)period; [dr present];
+ #else
+     uint64_t pn = ticket;   // Record the present time by the game's present sequence number (ticket number): hle's present statistics are taken by "the game's nth present"; in the display link path the actual present count != the game's present count (old frames get merged and dropped)
+-    if (!g_fg_owing) [dr addPresentedHandler:^(id<MTLDrawable> d) {   // Actual presentation time (the time this frame is really put on screen, CACurrentMediaTime base; for a present with a generated frame, that frame's)
++    const int count_game_ticket = !g_fg_owing;
++#if TARGET_OS_IPHONE
++    const int generated = (t->serial >> 61) == 1 && (t->serial & (1ull << 40));
++#endif
++    [dr addPresentedHandler:^(id<MTLDrawable> d) {
+         CFTimeInterval tt = d.presentedTime;
+-        g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
+-        pres_seen(pn, tt);
++#if TARGET_OS_IPHONE
++        if (tt > 0) {
++            _Atomic uint64_t *count = generated ? &g_nativecool_generated_presented : &g_nativecool_real_presented;
++            atomic_fetch_add_explicit(count, 1, memory_order_relaxed);
++        }
++#endif
++        if (count_game_ticket) {
++            g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
++            pres_seen(pn, tt);
++        }
+     }];
+     // Each frame is displayed for at least one present period: when the GPU completion time jitters around a 120 Hz refresh boundary, the paired "25 ms + 8.33 ms" stutter no longer appears
+     if (target_ts > 0) [dr present];
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -349,7 +349,17 @@
+ // On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 (the launcher, Documents/env.txt) overrides that without a rebuild,
+ // and the in-game menu turns it on and off ([DmRootVC showFPS:]). The heat and battery line is DM_SHOW_HEAT_BATTERY's (the launcher's row under the counter's, off by default):
+ // without it the counter is the frame rate alone
++#if TARGET_OS_SIMULATOR
+ uint64_t mtl_present_count(void);
++#endif
++static void fps_presented_counts(uint64_t *real, uint64_t *generated) {
++#if TARGET_OS_SIMULATOR
++    *real = mtl_present_count();
++    *generated = 0;
++#else
++    nativecool_presented_counts(real, generated);
++#endif
++}
+ // The battery level in 1 % steps, as the status bar shows it, from IOKit's power sources (in the iOS runtime, not in its SDK, so looked up by name); UIDevice's batteryLevel moves in
+ // 5 % steps on current iOS. -1 when they give nothing (the sandbox may refuse them): the caller falls back to UIDevice
+ static double battery_exact(void) {
+@@ -403,16 +413,29 @@
+     l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
+     static NSString *const heat[] = {@"Normal", @"Busy", @"Throttling", @"Overheat"};   // NSProcessInfoThermalState nominal, fair, serious, critical
+     __block battery_fall_t bat = {0, -1, -1};
+-    __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime(); __block NSString *fps = @"--";
++    uint64_t real0, generated0;
++    fps_presented_counts(&real0, &generated0);
++    __block uint64_t n0 = real0, gen0 = generated0;
++    __block double t0 = CACurrentMediaTime();
++    __block NSString *fps = @"-- fps";
+     void (^update)(bool) = ^(bool restart) {
+-        uint64_t n = mtl_present_count(); double now = CACurrentMediaTime(); int th = dm_thermal_now();
++        uint64_t n, gen;
++        fps_presented_counts(&n, &gen);
++        double now = CACurrentMediaTime(); int th = dm_thermal_now();
+         if (restart) bat = (battery_fall_t){0, -1, -1};   // a measurement paused while the line was off is not resumed
+         else {
+-            if (now - t0 < 1.5) fps = [NSString stringWithFormat:@"%.0f", (n - n0) / (now - t0)];   // a longer span (a stall, the background): no reading
+-            n0 = n; t0 = now;
++            double span = now - t0;
++            if (span >= 0.5 && span < 1.5) {
++                double realFPS = (n - n0) / span, generatedFPS = (gen - gen0) / span;
++                fps = generatedFPS > 0
++                    ? [NSString stringWithFormat:@"%.0f + %.0f gen fps", realFPS, generatedFPS]
++                    : [NSString stringWithFormat:@"%.0f fps", realFPS];
++            } else {
++                fps = @"-- fps";
++            }
++            n0 = n; gen0 = gen; t0 = now;
+         }
+-        NSString *text = g_fps_heat_battery ? [NSString stringWithFormat:@"%@ fps · %@\n%@", fps, heat[th >= 0 && th <= 3 ? th : 0], battery_line(&bat, now)]
+-                                            : [NSString stringWithFormat:@"%@ fps", fps];
++        NSString *text = g_fps_heat_battery ? [NSString stringWithFormat:@"%@ · %@\n%@", fps, heat[th >= 0 && th <= 3 ? th : 0], battery_line(&bat, now)] : fps;
+         if (text.length != l.text.length) [l.superview setNeedsLayout];
+         l.text = text;
+     };
+--- a/dm/host/front.h
++++ b/dm/host/front.h
+@@ -92,3 +92,6 @@
+ // again, when the player allowed notifications (else it asks on screen to open the app again); it returns when the notification is scheduled. With no DM_EXEC_OUT (an app of one program, which asks to start itself again) it asks the player on
+ // screen to open the app again. The default (hle_oe.c, weak) returns at once
+ void front_program_handoff(int index, const char *name);
++
++// Hardware iOS display counts, split by drawable type.
++void nativecool_presented_counts(uint64_t *real, uint64_t *generated);

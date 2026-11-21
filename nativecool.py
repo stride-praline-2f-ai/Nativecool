@@ -32,6 +32,12 @@ def main():
     parser.add_argument("input", type=Path, help="local game file or dump folder")
     parser.add_argument("--backend", required=True, type=Path,
                         help="path to the game's backend checkout")
+    parser.add_argument("--screen-shape-engine", action="store_true",
+                        help="use richservo's experimental totk-screen-shape checkout")
+    parser.add_argument("--duo", action="store_true",
+                        help="package the shared iPhone Duo settings")
+    parser.add_argument("--picture", choices=("fit", "fill", "match"),
+                        help="Duo picture mode (fill crops, match needs a game-specific viewport)")
     parser.add_argument("--keys", type=Path, help="local keys for encrypted packages")
     parser.add_argument("--platform", choices=("ios", "mac-app"), default="ios")
     parser.add_argument("--output-dir", type=Path, default=Path("build"))
@@ -54,8 +60,35 @@ def main():
         parser.error("The supplied keys path must be an existing file.")
     if args.bundle_romfs and args.platform != "ios":
         parser.error("--bundle-romfs applies only to IPA builds.")
+    if args.picture and not args.duo:
+        parser.error("--picture requires --duo.")
+    if args.duo and args.platform != "ios":
+        parser.error("--duo applies only to IPA builds.")
+    if args.screen_shape_engine:
+        branch_notes = backend / "HOOKLINK.md"
+        if not branch_notes.is_file() or "DM_FRAME_MODE" not in branch_notes.read_text():
+            parser.error("--screen-shape-engine requires the richservo checkout with HookLink support.")
+        backend_name, xcode = "richservo screen-shape", "27.2"
+
+    settings = {}
+    if args.duo:
+        settings = {
+            "DM_OPMODE": "0",
+            "DM_PRESENT_UPSCALE": "metalfx",
+            "DM_PSO_PREBUILD": "1",
+            "DM_SHOW_FPS": "1",
+            "DM_PICTURE_FIT": "fill" if args.picture == "fill" else "fit",
+        }
+        if args.picture == "match":
+            settings["DM_SCREEN_ASPECT"] = "auto"
+            print("Match Screen requires title-specific viewport support. Check geometry and HUD on-device.",
+                  flush=True)
 
     output_dir = args.output_dir.expanduser().resolve() / args.game / args.platform
+    if args.screen_shape_engine:
+        output_dir /= "screen-shape"
+    if args.duo:
+        output_dir /= "duo-" + (args.picture or "fit")
     extension = ".ipa" if args.platform == "ios" else ".app"
     artifact = output_dir / (args.game + extension)
     command = [
@@ -65,12 +98,18 @@ def main():
     ]
     if args.platform == "ios":
         command += ["--romfs", "bundle" if args.bundle_romfs else "separate"]
+    settings_file = output_dir / "duo.env"
+    settings_text = "".join(f"{key}={value}\n" for key, value in settings.items())
+    if settings:
+        command += ["--gpu", "g19p", "--env-file", str(settings_file)]
 
     print(f"{name} · {version} · {backend_name} · Xcode {xcode}", flush=True)
     print(f"Output: {artifact}", flush=True)
     if args.dry_run:
         redacted = command + (["-k", "<local keys file>"] if keys else [])
         print(shlex.join(redacted))
+        if settings_text:
+            print(settings_text, end="")
         return 0
     if sys.platform != "darwin" or platform.machine() != "arm64":
         parser.error("Build on an Apple silicon Mac. --dry-run is portable.")
@@ -81,6 +120,8 @@ def main():
         command += ["-k", str(keys)]
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
+        if settings_text:
+            settings_file.write_text(settings_text, encoding="utf-8")
         result = subprocess.run(command, cwd=backend, check=False)
     except OSError as error:
         parser.exit(1, f"Build could not start: {error}\n")

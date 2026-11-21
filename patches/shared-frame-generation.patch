@@ -1,0 +1,19 @@
+--- a/dm/host/frame_mode.h
++++ b/dm/host/frame_mode.h
+@@ -14,6 +14,16 @@
+     // that preset, so its 12 is taken as auto here; another value, or 12 asked for with DM_RT_COMP_FIXED=1, stays
+     { const char *rc = getenv("DM_RT_COMP"), *fx = getenv("DM_RT_COMP_FIXED");
+       if (rc && !strcmp(rc, "12") && !(fx && atoi(fx))) { setenv("DM_RT_COMP", "auto", 1); fprintf(stderr, "frame rate mode: DM_RT_COMP=auto replaces the preset's fixed 12 ms (HookLink 1.8.5)\n"); } }
++    // Nativecool: select the common MetalFX present path while keeping
++    // the game's simulation-step, hold and payback configuration.
++    const char *nativecool_fps = getenv("DM_NATIVECOOL_FRAMEGEN_FPS");
++    if (nativecool_fps && (!strcmp(nativecool_fps, "30") || !strcmp(nativecool_fps, "60"))) {
++        fprintf(stderr, "Nativecool: requested %s real fps with MetalFX interpolation\n", nativecool_fps);
++        setenv("DM_FPS_TARGET", nativecool_fps, 1);
++        setenv("DM_PRESENT_SNAP", "3", 1);
++        setenv("DM_FRAMEGEN", "1", 1);
++        return;
++    }
+     const char *e = getenv("DM_FRAME_MODE"); int m = e ? atoi(e) : 0;
+     if (m < 1 || m > 3) return;
+     static const char *const names[4] = { "", "30 fps, steady", "30 fps + frame generation (shown at 60)", "60 fps + frame generation (shown at 120)" };

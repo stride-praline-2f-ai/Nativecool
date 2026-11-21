@@ -1,0 +1,12 @@
+/build/
+/.local/
+__pycache__/
+*.keys
+*.nsp
+*.xci
+*.nsz
+*.xcz
+*.nup
+*.nx
+*.ipa
+*.app/

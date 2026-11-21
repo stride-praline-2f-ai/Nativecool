@@ -27,7 +27,7 @@ Add `--dry-run` to check the paths and generated command without running the pac
 Add `--duo` to any of the three commands above. This packages handheld mode, MetalFX present upscaling, pipeline preparation, an FPS counter and aspect-preserving Fit. It requests the A20 GPU pipeline archive (`g19p`). Shader prewarm coverage comes from the selected game's upstream profile. The bundled settings are fixed for that build. Launch without `--duo` for an upstream-default comparison.
 
 - `--duo --picture fill` fills the display without stretching by cropping the picture. Check HUD and multiplayer margins before using it.
-- `--duo --picture match` requests the backend's display-matched viewport. The option only changes the world framing when the game has the corresponding viewport support. Fit remains the presentation mode. True fullscreen with a separate 16:9 HUD is verified in the linked Tears of the Kingdom report. Equivalent behavior is open for these three titles.
+- `--duo --picture match` requests the backend's display-matched viewport. The option only changes the world framing when the game has the corresponding viewport support. Fit remains the presentation mode. On Ocarina with the screen-shape engine this selects the title’s Wide View with a centered 16:9 HUD and movies. The Duo-shaped Ocarina mode still needs a device test. True fullscreen with a separate 16:9 HUD is verified in the linked Tears of the Kingdom report. Overcooked and Dungeons still need their own world projection and HUD composition changes.
 - `--screen-shape-engine` selects the experimental richservo engine with HookLink-derived runtime code. The branch contains profiles for all three target games, including the smaller Dungeons memory layout. Frame generation, real-time frame stepping, pipeline handling and viewport behavior still depend on the title and the engine's runtime gates. Zelda-specific rendering and timing changes require equivalent game-specific work for Overcooked and Dungeons. Use the original build route as a comparison.
 
 ~~~sh
@@ -38,6 +38,17 @@ python3 nativecool.py dungeons ~/Games/DungeonsII --backend ~/src/nxnative --key
 ~~~
 
 Use Xcode 27.2 for the screen-shape checkout. Remove `--dry-run` to build. Preset and experimental builds have their own output and work directories, so you can compare them against upstream defaults.
+
+### MetalFX frame generation
+
+For any of the three games, add `--duo --screen-shape-engine --frame-generation 30` or `--frame-generation 60`. Nativecool compiles a small [host patch](patches/shared-frame-generation.patch) that selects the branch's shared MetalFX presentation path and keeps the game's simulation-step, hold and payback settings. The 30 FPS option targets a 60 Hz presentation and the 60 FPS option needs a 120 Hz display-link mode to interpolate a frame between each pair. The engine can skip interpolation when it falls behind. The requested timing, input latency and HUD motion still need to be measured on each game.
+
+The patch targets richservo revision `07d8ba52b671053dd67286ba3586b4ced4100203`. Check out that commit in the screen-shape clone. The packer builds from a temporary worktree and leaves your checkout alone.
+
+~~~sh
+git -C ~/src/nxnative-screen-shape checkout --detach 07d8ba52b671053dd67286ba3586b4ced4100203
+python3 nativecool.py ocarina ~/Games/Ocarina.nup --backend ~/src/nxnative-screen-shape --screen-shape-engine --duo --picture match --frame-generation 30
+~~~
 
 ## What the five references tell us
 
